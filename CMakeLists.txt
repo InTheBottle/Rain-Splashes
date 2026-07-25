@@ -20,6 +20,8 @@ add_subdirectory(extern/CommonLibSSE-NG CommonLibSSE EXCLUDE_FROM_ALL)
 # ---- Plugin Sources ----
 set(SOURCES
 	src/Main.cpp
+	src/Splash.h
+	src/Splash.cpp
 )
 
 source_group(

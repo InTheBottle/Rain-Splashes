@@ -1,5 +1,9 @@
 #include <spdlog/sinks/basic_file_sink.h>
 
+#include "Splash.h"
+
+using namespace RainSplashes;
+
 namespace
 {
 	void SetupLog()
@@ -23,6 +27,11 @@ namespace
 	{
 		switch (a_msg->type) {
 		case SKSE::MessagingInterface::kDataLoaded:
+			Splash::Install();
+			break;
+		case SKSE::MessagingInterface::kPostLoadGame:
+		case SKSE::MessagingInterface::kNewGame:
+			Splash::Reset();
 			break;
 		default:
 			break;
