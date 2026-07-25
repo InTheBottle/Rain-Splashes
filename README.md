@@ -1,14 +1,3 @@
-# Rain Splashes
-
-An SKSE plugin that adds rain splash effects to Skyrim.
-
-> Early scaffolding — the plugin currently loads, sets up logging, and does nothing else.
-
-## Requirements
-
-- SKSE64 (SE/AE) or SKSEVR — the plugin is built multi-runtime.
-- Address Library for SKSE Plugins.
-
 ## Building
 
 Requires Visual Studio 2022, CMake 3.21+, and vcpkg (`VCPKG_ROOT` set). CommonLibSSE-NG is a
