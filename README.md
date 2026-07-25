@@ -14,5 +14,23 @@ folder automatically.
 
 ## Install
 
-Copy `RainSplashes.dll` to `Data/SKSE/Plugins/`. Runtime logs are written to
+Requires SKSE64 and Address Library for SKSE Plugins. Copy all three trees into `Data/`:
+
+```
+Data/SKSE/Plugins/RainSplashes.dll
+Data/meshes/RainSplash/soggyfeet_splash.nif
+Data/textures/RainSplash/*.dds
+```
+
+The meshes and textures are not optional — the DLL spawns
+`meshes/RainSplash/soggyfeet_splash.nif`, which references the textures by path. With the
+DLL alone the plugin loads and logs normally but no splash is ever visible.
+
+Runtime logs are written to
 `Documents/My Games/Skyrim Special Edition/SKSE/RainSplashes.log`.
+
+## Packaging
+
+`cmake --build build/release --config Release --target RainSplashes`, then zip the DLL
+plus the `meshes/` and `textures/` folders with the archive rooted at `Data/`, so mod
+managers install it without repackaging.
