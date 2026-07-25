@@ -60,6 +60,13 @@ target_precompile_headers(${PROJECT_NAME}
 		<SKSE/SKSE.h>
 )
 
+# Emit a PDB for Release too, so shipped builds can be read by crash loggers.
+# /OPT:REF /OPT:ICF undo the folding /DEBUG would otherwise disable.
+if(MSVC)
+	target_compile_options(${PROJECT_NAME} PRIVATE $<$<CONFIG:Release>:/Zi>)
+	target_link_options(${PROJECT_NAME} PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+endif()
+
 # ---- Output ----
 if(DEFINED ENV{SKYRIM_MODS_FOLDER})
 	set(OUTPUT_FOLDER "$ENV{SKYRIM_MODS_FOLDER}/RainSplashes/SKSE/Plugins")
@@ -75,12 +82,12 @@ if(DEFINED OUTPUT_FOLDER)
 		VERBATIM
 	)
 
-	if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-		add_custom_command(
-			TARGET ${PROJECT_NAME}
-			POST_BUILD
-			COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_PDB_FILE:${PROJECT_NAME}>" "${OUTPUT_FOLDER}"
-			VERBATIM
-		)
-	endif()
+	# Every config produces a PDB now, so this needs no config check - and a
+	# check would be wrong anyway, since the VS generator is multi-config.
+	add_custom_command(
+		TARGET ${PROJECT_NAME}
+		POST_BUILD
+		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_PDB_FILE:${PROJECT_NAME}>" "${OUTPUT_FOLDER}"
+		VERBATIM
+	)
 endif()
