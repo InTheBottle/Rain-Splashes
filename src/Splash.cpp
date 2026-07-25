@@ -1,7 +1,7 @@
 #include "Splash.h"
 
+#include <chrono>
 #include <mutex>
-#include <numbers>
 #include <random>
 #include <unordered_map>
 
@@ -103,26 +103,23 @@ namespace RainSplashes::Splash
 				return;
 			}
 
-			auto* foot = PlantedFoot(a_actor);
-			if (!foot) {
-				return;
-			}
-
 			if (!TakeCooldown(a_actor->GetFormID(), NowSeconds())) {
 				return;
 			}
 
 			const float scale = RandomInRange(kMinScale, kMaxScale);
 
-			// Foot bone rides at ankle height, so sit the effect on the ground.
-			const auto&        footPos = foot->world.translate;
-			const RE::NiPoint3 position{ footPos.x, footPos.y, a_actor->GetPosition().z };
-			const RE::NiPoint3 rotation{ 0.0f, 0.0f,
-				RandomInRange(0.0f, 2.0f * std::numbers::pi_v<float>) };
+			// First person 3D has no foot bones, so fall back to the actor itself.
+			auto* foot = PlantedFoot(a_actor);
+
+			// The foot bone rides at ankle height, so sit the effect on the ground.
+			const RE::NiPoint3 base = a_actor->GetPosition();
+			const RE::NiPoint3 position =
+				foot ? RE::NiPoint3{ foot->world.translate.x, foot->world.translate.y, base.z } : base;
 
 			const RE::FormID id = a_actor->GetFormID();
 
-			SKSE::GetTaskInterface()->AddTask([id, position, rotation, scale]() {
+			SKSE::GetTaskInterface()->AddTask([id, position, scale]() {
 				auto* form = RE::TESForm::LookupByID(id);
 				auto* actor = form ? form->As<RE::Actor>() : nullptr;
 				if (!actor) {
@@ -134,8 +131,9 @@ namespace RainSplashes::Splash
 					return;
 				}
 
-				RE::BSTempEffectParticle::Spawn(cell, kLifetime, kModel, rotation, position, scale,
-					kParticleFlags, nullptr);
+				// NiMatrix3 defaults to identity; the NiPoint3 overload is ambiguous.
+				RE::BSTempEffectParticle::Spawn(cell, kLifetime, kModel, RE::NiMatrix3(), position,
+					scale, kParticleFlags, nullptr);
 			});
 		}
 
