@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 project(
 	RainSplashes
 	LANGUAGES CXX
-	VERSION 1.0.0
+	VERSION 1.1.0
 	DESCRIPTION "Rain splash effects for Skyrim"
 )
 
@@ -88,6 +88,15 @@ if(DEFINED OUTPUT_FOLDER)
 		TARGET ${PROJECT_NAME}
 		POST_BUILD
 		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_PDB_FILE:${PROJECT_NAME}>" "${OUTPUT_FOLDER}"
+		VERBATIM
+	)
+
+	# copy_if_different, so a locally edited ini is not clobbered on every build.
+	add_custom_command(
+		TARGET ${PROJECT_NAME}
+		POST_BUILD
+		COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+			"${CMAKE_CURRENT_SOURCE_DIR}/SKSE/Plugins/RainSplashes.ini" "${OUTPUT_FOLDER}"
 		VERBATIM
 	)
 endif()

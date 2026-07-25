@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
   "name": "rainsplashes",
-  "version-semver": "1.0.0",
+  "version-semver": "1.1.0",
   "description": "Rain splash effects for Skyrim",
   "license": "MIT",
   "supports": "windows & x64",
