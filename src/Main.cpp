@@ -1,5 +1,7 @@
 #include "Splash.h"
 
+#include <SKSE/SKSE.h>
+
 using namespace RainSplashes;
 
 namespace

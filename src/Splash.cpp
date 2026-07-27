@@ -1,13 +1,20 @@
 #include "Splash.h"
 
+#include <RE/Skyrim.h>
+#include <SKSE/SKSE.h>
+
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cmath>
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -45,10 +52,14 @@ namespace RainSplashes::Splash
 			return dist(RNG());
 		}
 
+		// steady_clock counts from system boot, and a float holds seconds that large
+		// to worse than kCooldown once the machine has been up a fortnight. Counting
+		// from plugin load instead keeps the magnitude small enough to stay exact.
+		const std::chrono::steady_clock::time_point g_epoch = std::chrono::steady_clock::now();
+
 		float NowSeconds()
 		{
-			using namespace std::chrono;
-			return duration<float>(steady_clock::now().time_since_epoch()).count();
+			return std::chrono::duration<float>(std::chrono::steady_clock::now() - g_epoch).count();
 		}
 
 		std::string_view Trim(std::string_view a_text)
@@ -58,12 +69,28 @@ namespace RainSplashes::Splash
 			return first == std::string_view::npos ? std::string_view{} : a_text.substr(first, last - first + 1);
 		}
 
+		bool KeyIs(std::string_view a_key, std::string_view a_name)
+		{
+			return std::ranges::equal(a_key, a_name, [](char a_lhs, char a_rhs) {
+				return std::tolower(static_cast<unsigned char>(a_lhs)) ==
+				       std::tolower(static_cast<unsigned char>(a_rhs));
+			});
+		}
+
+		// Anything the ini asks for that does not survive gets said out loud, so a
+		// typo does not look like the plugin quietly ignoring the file.
 		template <class T>
-		void Read(std::string_view a_value, T& a_out, T a_min, T a_max)
+		void Read(std::string_view a_key, std::string_view a_value, T& a_out, T a_min, T a_max)
 		{
 			T parsed{};
-			if (std::from_chars(a_value.data(), a_value.data() + a_value.size(), parsed).ec == std::errc{}) {
-				a_out = std::clamp(parsed, a_min, a_max);
+			if (std::from_chars(a_value.data(), a_value.data() + a_value.size(), parsed).ec != std::errc{}) {
+				SKSE::log::warn("{} is not a number, keeping {}", a_key, a_out);
+				return;
+			}
+
+			a_out = std::clamp(parsed, a_min, a_max);
+			if (a_out != parsed) {
+				SKSE::log::warn("{} out of range, clamped to {}", a_key, a_out);
 			}
 		}
 
@@ -74,6 +101,11 @@ namespace RainSplashes::Splash
 			std::string   line;
 
 			while (std::getline(file, line)) {
+				// Notepad still writes a BOM, which would otherwise glue itself to the first key.
+				if (line.starts_with("\xEF\xBB\xBF")) {
+					line.erase(0, 3);
+				}
+
 				const auto separator = line.find('=');
 				if (separator == std::string::npos || Trim(line).starts_with(';')) {
 					continue;
@@ -83,10 +115,12 @@ namespace RainSplashes::Splash
 				const auto             key = Trim(text.substr(0, separator));
 				const auto             value = Trim(text.substr(separator + 1));
 
-				if (key == "Scale") {
-					Read(value, g_scale, 0.1f, 5.0f);
-				} else if (key == "MaxNPCs") {
-					Read(value, g_maxNPCs, std::size_t{ 0 }, std::size_t{ 200 });
+				if (KeyIs(key, "Scale")) {
+					Read(key, value, g_scale, 0.1f, 5.0f);
+				} else if (KeyIs(key, "MaxNPCs")) {
+					Read(key, value, g_maxNPCs, std::size_t{ 0 }, std::size_t{ 200 });
+				} else {
+					SKSE::log::warn("Ignoring unknown key {}", key);
 				}
 			}
 
@@ -130,6 +164,34 @@ namespace RainSplashes::Splash
 			return true;
 		}
 
+		enum class Foot
+		{
+			kLeft,
+			kRight,
+			kEither
+		};
+
+		std::optional<Foot> FootFromTag(std::string_view a_tag)
+		{
+			if (a_tag == "JumpDown") {
+				return Foot::kEither;
+			}
+
+			if (!a_tag.starts_with("Foot")) {
+				return std::nullopt;
+			}
+
+			if (a_tag.contains("Left")) {
+				return Foot::kLeft;
+			}
+
+			if (a_tag.contains("Right")) {
+				return Foot::kRight;
+			}
+
+			return Foot::kEither;
+		}
+
 		RE::NiPoint3 FromHavok(const RE::hkVector4& a_vector)
 		{
 			float values[4]{};
@@ -158,15 +220,63 @@ namespace RainSplashes::Splash
 			RE::NiMatrix3 rotation;
 		};
 
-		// Ankle bones ride above the surface the foot stands on, so the ground has to be
-		// picked for. The planted foot is the one with the least clearance over it -
-		// comparing ankle heights alone inverts on a slope, where the trailing foot hangs
-		// lower than the one that just landed.
-		Placement FootPlacement(RE::Actor* a_actor, RE::TESObjectCELL* a_cell)
+		struct Ground
 		{
-			static const RE::BSFixedString feet[]{ "NPC L Foot [Lft ]", "NPC R Foot [Rft ]" };
+			RE::NiPoint3 position;
+			RE::NiPoint3 normal;
+		};
 
-			// Fallback for first person 3D, which has no foot bones.
+		std::optional<Ground> ProbeGround(RE::bhkWorld* a_world, float a_havok, const RE::NiPoint3& a_origin)
+		{
+			const RE::NiPoint3 from{ a_origin.x, a_origin.y, a_origin.z + kProbeAbove };
+			const RE::NiPoint3 to{ a_origin.x, a_origin.y, a_origin.z - kProbeBelow };
+
+			RE::bhkPickData pick;
+			pick.rayInput.from = from * a_havok;
+			pick.rayInput.to = to * a_havok;
+			pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
+			{
+				RE::BSReadLockGuard lock(a_world->worldLock);
+				a_world->PickObject(pick);
+			}
+
+			if (!pick.rayOutput.HasHit()) {
+				return std::nullopt;
+			}
+
+			auto*              ref = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable);
+			const RE::NiPoint3 normal = FromHavok(pick.rayOutput.normal);
+			if ((ref && ref->As<RE::Actor>()) || normal.z < kMinGroundNormalZ) {
+				return std::nullopt;
+			}
+
+			return Ground{ from + (to - from) * pick.rayOutput.hitFraction, normal };
+		}
+
+		struct Bones
+		{
+			RE::BSFixedString ankle;
+			RE::BSFixedString toe;
+		};
+
+		std::optional<RE::NiPoint3> FootAnchor(RE::NiAVObject* a_root, const Bones& a_bones)
+		{
+			auto* ankle = a_root->GetObjectByName(a_bones.ankle);
+			if (!ankle) {
+				return std::nullopt;
+			}
+
+			auto* toe = a_root->GetObjectByName(a_bones.toe);
+			return toe ? (ankle->world.translate + toe->world.translate) * 0.5f : ankle->world.translate;
+		}
+
+		Placement FootPlacement(RE::Actor* a_actor, RE::TESObjectCELL* a_cell, Foot a_foot)
+		{
+			static const auto& bones = *new std::array<Bones, 2>{
+				Bones{ "NPC L Foot [Lft ]", "NPC L Toe0 [LToe]" },
+				Bones{ "NPC R Foot [Rft ]", "NPC R Toe0 [RToe]" }
+			};
+
 			Placement placement{ a_actor->GetPosition(), {} };
 
 			auto* world = a_cell->GetbhkWorld();
@@ -175,51 +285,53 @@ namespace RainSplashes::Splash
 			}
 
 			const float havok = RE::bhkWorld::GetWorldScale();
-			float       best = (std::numeric_limits<float>::max)();
+			auto*       root = a_actor->Get3D(false);
 
-			for (const auto& name : feet) {
-				auto* foot = a_actor->GetNodeByName(name);
-				if (!foot) {
+			std::span<const Bones> candidates{};
+			if (root) {
+				candidates = bones;
+				if (a_foot == Foot::kLeft) {
+					candidates = candidates.first(1);
+				} else if (a_foot == Foot::kRight) {
+					candidates = candidates.last(1);
+				}
+			}
+
+			float best = (std::numeric_limits<float>::max)();
+
+			for (const auto& bone : candidates) {
+				const auto anchor = FootAnchor(root, bone);
+				if (!anchor) {
 					continue;
 				}
 
-				const RE::NiPoint3 ankle = foot->world.translate;
-				const RE::NiPoint3 from{ ankle.x, ankle.y, ankle.z + kProbeAbove };
-				const RE::NiPoint3 to{ ankle.x, ankle.y, ankle.z - kProbeBelow };
-
-				RE::bhkPickData pick;
-				pick.rayInput.from = from * havok;
-				pick.rayInput.to = to * havok;
-				pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
-				{
-					RE::BSReadLockGuard lock(world->worldLock);
-					world->PickObject(pick);
-				}
-
-				if (!pick.rayOutput.HasHit()) {
+				const auto ground = ProbeGround(world, havok, *anchor);
+				if (!ground) {
 					continue;
 				}
 
-				// The probe starts inside the actor's own leg, and whether the collision
-				// filter drops bipeds is runtime data.
-				auto*              ref = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable);
-				const RE::NiPoint3 normal = FromHavok(pick.rayOutput.normal);
-				if ((ref && ref->As<RE::Actor>()) || normal.z < kMinGroundNormalZ) {
-					continue;
-				}
-
-				const RE::NiPoint3 ground = from + (to - from) * pick.rayOutput.hitFraction;
-				if (const float clearance = ankle.z - ground.z; clearance < best) {
+				if (const float clearance = anchor->z - ground->position.z; clearance < best) {
 					best = clearance;
-					placement = { ground, UprightOn(normal) };
+					placement = { ground->position, UprightOn(ground->normal) };
+				}
+			}
+
+			if (best == (std::numeric_limits<float>::max)()) {
+				if (const auto ground = ProbeGround(world, havok, a_actor->GetPosition())) {
+					placement = { ground->position, UprightOn(ground->normal) };
 				}
 			}
 
 			return placement;
 		}
 
-		void OnFootstep(RE::Actor* a_actor)
+		void OnFootstep(RE::Actor* a_actor, std::string_view a_tag)
 		{
+			const auto foot = FootFromTag(a_tag);
+			if (!foot) {
+				return;
+			}
+
 			if (!a_actor || a_actor->IsDead() || !a_actor->Get3D()) {
 				return;
 			}
@@ -251,7 +363,7 @@ namespace RainSplashes::Splash
 
 			const float scale = RandomInRange(kMinScale, kMaxScale) * g_scale;
 
-			SKSE::GetTaskInterface()->AddTask([id, scale]() {
+			SKSE::GetTaskInterface()->AddTask([id, scale, foot = *foot]() {
 				auto* form = RE::TESForm::LookupByID(id);
 				auto* actor = form ? form->As<RE::Actor>() : nullptr;
 				auto* cell = actor ? actor->GetParentCell() : nullptr;
@@ -260,7 +372,7 @@ namespace RainSplashes::Splash
 				}
 
 				// Picking the havok world wants the main thread.
-				const Placement placement = FootPlacement(actor, cell);
+				const Placement placement = FootPlacement(actor, cell, foot);
 
 				RE::BSTempEffectParticle::Spawn(cell, kLifetime, kModel, placement.rotation,
 					placement.position, scale, kParticleFlags, nullptr);
@@ -281,7 +393,7 @@ namespace RainSplashes::Splash
 			{
 				if (a_event) {
 					if (const auto actor = a_event->actor.get()) {
-						OnFootstep(actor.get());
+						OnFootstep(actor.get(), a_event->tag);
 					}
 				}
 				return RE::BSEventNotifyControl::kContinue;
@@ -295,6 +407,10 @@ namespace RainSplashes::Splash
 	void Install()
 	{
 		LoadConfig();
+		if (!SKSE::GetTaskInterface()) {
+			SKSE::log::error("Task interface unavailable - footstep splashes disabled");
+			return;
+		}
 
 		auto* manager = RE::BGSFootstepManager::GetSingleton();
 		if (!manager) {
